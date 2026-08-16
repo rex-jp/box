@@ -16,8 +16,6 @@ html,body{min-height:100%;background:var(--bg);color:var(--text);
   font-family:-apple-system,"Noto Sans JP",sans-serif;font-weight:300;line-height:1.6}
 .wrap{max-width:520px;margin:0 auto;padding:2.5rem 1.25rem;min-height:100vh;
   display:flex;flex-direction:column;justify-content:center}
-.logo{font-size:.8rem;letter-spacing:.18em;color:var(--muted);
-  text-transform:uppercase;margin-bottom:1.5rem}
 .card{background:var(--surface);border:1px solid var(--border);
   border-radius:var(--r);padding:1.75rem}
 h1{font-size:1.05rem;font-weight:500;margin-bottom:.35rem}
@@ -43,12 +41,12 @@ input:focus{border-color:var(--accent)}
 .meta span:last-child{color:var(--text);font-family:ui-monospace,monospace;
   word-break:break-all;text-align:right}
 .hidden{display:none}
+.gone{display:flex;align-items:center;justify-content:center;min-height:100vh;
+  color:var(--muted);font-size:.9rem;letter-spacing:.1em}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="logo">gio_system / box</div>
-
   <div class="card">
     <h1 id="title">受け取り</h1>
     <div class="sub" id="subtitle">パスを入力すると、この画面の中だけで開きます。</div>
@@ -100,14 +98,9 @@ if (hash) {
   $("code-field").classList.add("hidden");
 }
 
-function done(title, sub) {
-  $("form").classList.add("hidden");
-  $("meta").classList.add("hidden");
-  $("title").textContent = title;
-  $("subtitle").textContent = sub;
-  say("");
-  // 自分で開いたタブなら閉じる。そうでなければブラウザが拒む(仕様)。
-  setTimeout(() => { try { window.close(); } catch (e) {} }, 400);
+// 受け取り済み・期限切れ・番号違いを見分けさせない。全部これになる。
+function gone() {
+  document.body.innerHTML = '<div class="gone">404</div>';
 }
 
 async function fetchJSON(url) {
@@ -141,18 +134,9 @@ async function unlock() {
     $("go").disabled = false; return;
   }
   if (!box) {
-    if (sessionStorage.getItem("box_used") === code) {
-      done("受け取り済みです", "この箱は役目を終えました。閉じて構いません。");
-    } else {
-      say("この箱はありません。受け取り済みか、期限切れか、番号違いです。", "err");
-      $("go").disabled = false;
-    }
-    return;
+    gone(); return;
   }
-  if (box.exp && Date.now() / 1000 > box.exp) {
-    say("この箱は期限切れです。送り主に出し直しを頼んでください。", "err");
-    $("go").disabled = false; return;
-  }
+  if (box.exp && Date.now() / 1000 > box.exp) { gone(); return; }
 
   // 暗号文を組み立てる。1枚(ct)でも、分割(parts + c0..cN)でも同じ形に揃える。
   say("受け取っています…");
