@@ -42,7 +42,6 @@ input:focus{border-color:var(--accent)}
 .meta div{display:flex;justify-content:space-between;gap:1rem;padding:.15rem 0}
 .meta span:last-child{color:var(--text);font-family:ui-monospace,monospace;
   word-break:break-all;text-align:right}
-.note{margin-top:1.5rem;font-size:.72rem;color:var(--muted);line-height:1.7}
 .hidden{display:none}
 </style>
 </head>
@@ -74,11 +73,6 @@ input:focus{border-color:var(--accent)}
       <div><span>置かれた時刻</span><span id="m-at">—</span></div>
     </div>
   </div>
-
-  <div class="note">
-    箱に入っているのは暗号文だけです。パスはこの画面から外へ出ません
-    （サーバにも、CTOにも渡りません）。パスを失うと中身は誰にも開けません。<br>受け取れた時点で箱は消えます（一度きり）。
-  </div>
 </div>
 
 <script>
@@ -101,9 +95,7 @@ function humanSize(n) {
 
 // リンクの #code を拾う。あれば番号欄は隠す(客に番号を打たせない)。
 const hash = location.hash.replace(/^#/, "").trim();
-if (hash === "used") {
-  done("受け取り済みです", "この箱は役目を終えました。閉じて構いません。");
-} else if (hash) {
+if (hash) {
   $("code").value = hash;
   $("code-field").classList.add("hidden");
 }
@@ -149,7 +141,7 @@ async function unlock() {
     $("go").disabled = false; return;
   }
   if (!box) {
-    if (sessionStorage.getItem("box_used") === code || hash === "used") {
+    if (sessionStorage.getItem("box_used") === code) {
       done("受け取り済みです", "この箱は役目を終えました。閉じて構いません。");
     } else {
       say("この箱はありません。受け取り済みか、期限切れか、番号違いです。", "err");
@@ -216,8 +208,6 @@ async function unlock() {
 
   // 中身は手元に出た。ここで箱を消す(以後このリンクは誰にも開けない)。
   const burned = await burn(code);
-  // 番号をURLから外す。アドレス欄・履歴・戻るボタン・スクショに残さない。
-  try { history.replaceState(null, "", location.pathname + "#used"); } catch (e) {}
   sessionStorage.setItem("box_used", code);
 
   $("m-name").textContent = head.name || "—";
