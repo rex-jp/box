@@ -77,7 +77,7 @@ input:focus{border-color:var(--accent)}
 
   <div class="note">
     箱に入っているのは暗号文だけです。パスはこの画面から外へ出ません
-    （サーバにも、CTOにも渡りません）。パスを失うと中身は誰にも開けません。
+    （サーバにも、CTOにも渡りません）。パスを失うと中身は誰にも開けません。<br>受け取れた時点で箱は消えます（一度きり）。
   </div>
 </div>
 
@@ -106,6 +106,20 @@ if (hash) {
   $("code-field").classList.add("hidden");
 }
 
+async function fetchJSON(url) {
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+// 受け取れた時点で箱を消す。匿名に許されているのは【消すこと】だけ。
+async function burn(code) {
+  try {
+    await fetch(`${DB}/box/${encodeURIComponent(code)}.json`, { method: "DELETE" });
+    return true;
+  } catch (e) { return false; }
+}
+
 async function unlock() {
   const code = $("code").value.trim();
   const pass = $("pass").value;
@@ -117,60 +131,89 @@ async function unlock() {
 
   let box;
   try {
-    const res = await fetch(`${DB}/box/${encodeURIComponent(code)}.json`, { cache: "no-store" });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    box = await res.json();
+    box = await fetchJSON(`${DB}/box/${encodeURIComponent(code)}.json`);
   } catch (e) {
     say("箱に届きませんでした（" + e.message + "）。", "err");
-    $("go").disabled = false;
-    return;
+    $("go").disabled = false; return;
   }
-
   if (!box) {
-    say("この箱はありません。期限が切れたか、番号が違います。", "err");
-    $("go").disabled = false;
-    return;
+    say("この箱はありません。受け取り済みか、期限切れか、番号違いです。", "err");
+    $("go").disabled = false; return;
   }
   if (box.exp && Date.now() / 1000 > box.exp) {
     say("この箱は期限切れです。送り主に出し直しを頼んでください。", "err");
-    $("go").disabled = false;
-    return;
+    $("go").disabled = false; return;
+  }
+
+  // 暗号文を組み立てる。1枚(ct)でも、分割(parts + c0..cN)でも同じ形に揃える。
+  say("受け取っています…");
+  let chunks;
+  if (box.parts) {
+    chunks = [];
+    for (let i = 0; i < box.parts; i++) {
+      const c = box["c" + i];
+      if (!c) { say(`箱が欠けています（${i + 1}/${box.parts}枚目）。`, "err");
+                $("go").disabled = false; return; }
+      chunks.push(c);
+      say(`受け取っています… ${i + 1}/${box.parts}`);
+    }
+  } else {
+    chunks = [box.ct];
   }
 
   say("開いています…");
-  let payload;
+  let head, bodyParts = [];
   try {
-    const salt = b64d(box.salt), iv = b64d(box.iv), ct = b64d(box.ct);
+    const salt = b64d(box.salt);
     const base = await crypto.subtle.importKey(
       "raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
     const key = await crypto.subtle.deriveKey(
       { name: "PBKDF2", salt, iterations: box.iter, hash: "SHA-256" },
       base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
-    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-    payload = JSON.parse(new TextDecoder().decode(plain));
+
+    for (let i = 0; i < chunks.length; i++) {
+      const raw = b64d(chunks[i]);
+      const iv = raw.slice(0, 12), ct = raw.slice(12);
+      // 通し番号をAADに混ぜてある = 並べ替え・抜き取りは復号に失敗する
+      const aad = new TextEncoder().encode(String(i));
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv, additionalData: aad }, key, ct);
+      if (i === 0) {
+        // 1枚目の先頭に「名前・種類・本体の長さ」の見出しが入っている
+        const buf = new Uint8Array(plain);
+        const nl = buf.indexOf(10);
+        head = JSON.parse(new TextDecoder().decode(buf.slice(0, nl)));
+        bodyParts.push(buf.slice(nl + 1));
+      } else {
+        bodyParts.push(new Uint8Array(plain));
+      }
+      say(`開いています… ${i + 1}/${chunks.length}`);
+    }
   } catch (e) {
     say("パスが違います。", "err");
-    $("go").disabled = false;
-    return;
+    $("go").disabled = false; return;
   }
 
-  // 復号できた = 中身も名前も、ここで初めて姿を現す。
-  const bytes = b64d(payload.data);
-  const blob = new Blob([bytes], { type: payload.mime || "application/octet-stream" });
+  const blob = new Blob(bodyParts, { type: head.mime || "application/octet-stream" });
   const url = URL.createObjectURL(blob);
 
-  $("m-name").textContent = payload.name || "—";
-  $("m-size").textContent = humanSize(bytes.length);
+  // 中身は手元に出た。ここで箱を消す(以後このリンクは誰にも開けない)。
+  const burned = await burn(code);
+
+  $("m-name").textContent = head.name || "—";
+  $("m-size").textContent = humanSize(blob.size);
   $("m-at").textContent = box.at || "—";
   $("meta").classList.remove("hidden");
 
   $("form").classList.add("hidden");
   $("title").textContent = "開きました";
-  $("subtitle").textContent = "下から保存できます。";
-  say("", "ok");
+  $("subtitle").textContent = burned
+    ? "箱は消しました。保存する前にこの画面を閉じないでください。"
+    : "★箱を消せませんでした。送り主に伝えてください。";
+  say(burned ? "" : "箱が残っています。", burned ? "ok" : "err");
 
   const a = document.createElement("a");
-  a.href = url; a.download = payload.name || "file";
+  a.href = url; a.download = head.name || "file";
   a.className = "btn"; a.textContent = "保存する";
   a.style.display = "block"; a.style.textAlign = "center";
   a.style.textDecoration = "none"; a.style.padding = ".75rem 1.1rem";
