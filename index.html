@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>box</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0c0c0c;--surface:#161616;--border:#252525;--border2:#333;
+  --text:#f0ebe0;--muted:#6b6560;--accent:#e8b45a;
+  --green:#5cc8a0;--red:#e06060;--r:10px;
+}
+html,body{min-height:100%;background:var(--bg);color:var(--text);
+  font-family:-apple-system,"Noto Sans JP",sans-serif;font-weight:300;line-height:1.6}
+.wrap{max-width:520px;margin:0 auto;padding:2.5rem 1.25rem;min-height:100vh;
+  display:flex;flex-direction:column;justify-content:center}
+.logo{font-size:.8rem;letter-spacing:.18em;color:var(--muted);
+  text-transform:uppercase;margin-bottom:1.5rem}
+.card{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r);padding:1.75rem}
+h1{font-size:1.05rem;font-weight:500;margin-bottom:.35rem}
+.sub{font-size:.8rem;color:var(--muted);margin-bottom:1.5rem}
+.field{margin-bottom:1rem}
+.field-label{display:block;font-size:.65rem;text-transform:uppercase;
+  letter-spacing:.12em;color:var(--muted);margin-bottom:.4rem}
+input{width:100%;background:var(--bg);border:1px solid var(--border2);
+  border-radius:6px;color:var(--text);font-size:.95rem;padding:.7rem .8rem;
+  outline:none;transition:border-color .2s}
+input:focus{border-color:var(--accent)}
+.btn{width:100%;border:none;border-radius:var(--r);cursor:pointer;
+  background:var(--accent);color:#0c0c0c;font-weight:500;font-size:.9rem;
+  padding:.75rem 1.1rem;transition:filter .15s}
+.btn:hover{filter:brightness(1.08)}
+.btn:disabled{opacity:.45;cursor:default}
+.status{margin-top:1rem;font-size:.82rem;min-height:1.4em}
+.status.err{color:var(--red)}
+.status.ok{color:var(--green)}
+.meta{margin-top:1.25rem;padding-top:1.25rem;border-top:1px solid var(--border);
+  font-size:.78rem;color:var(--muted)}
+.meta div{display:flex;justify-content:space-between;gap:1rem;padding:.15rem 0}
+.meta span:last-child{color:var(--text);font-family:ui-monospace,monospace;
+  word-break:break-all;text-align:right}
+.note{margin-top:1.5rem;font-size:.72rem;color:var(--muted);line-height:1.7}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">gio_system / box</div>
+
+  <div class="card">
+    <h1 id="title">受け取り</h1>
+    <div class="sub" id="subtitle">パスを入力すると、この画面の中だけで開きます。</div>
+
+    <div id="form">
+      <div class="field" id="code-field">
+        <label class="field-label" for="code">箱の番号</label>
+        <input id="code" type="text" autocomplete="off" spellcheck="false" placeholder="リンクに含まれています">
+      </div>
+      <div class="field">
+        <label class="field-label" for="pass">パス</label>
+        <input id="pass" type="password" autocomplete="off" placeholder="別便で届いたもの">
+      </div>
+      <button class="btn" id="go">開く</button>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div class="meta hidden" id="meta">
+      <div><span>ファイル名</span><span id="m-name">—</span></div>
+      <div><span>大きさ</span><span id="m-size">—</span></div>
+      <div><span>置かれた時刻</span><span id="m-at">—</span></div>
+    </div>
+  </div>
+
+  <div class="note">
+    箱に入っているのは暗号文だけです。パスはこの画面から外へ出ません
+    （サーバにも、CTOにも渡りません）。パスを失うと中身は誰にも開けません。
+  </div>
+</div>
+
+<script>
+const DB = "https://gio-brain-default-rtdb.asia-southeast1.firebasedatabase.app";
+const $ = id => document.getElementById(id);
+const b64d = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+function say(msg, kind) {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+function humanSize(n) {
+  if (!n && n !== 0) return "—";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
+// リンクの #code を拾う。あれば番号欄は隠す(客に番号を打たせない)。
+const hash = location.hash.replace(/^#/, "").trim();
+if (hash) {
+  $("code").value = hash;
+  $("code-field").classList.add("hidden");
+}
+
+async function unlock() {
+  const code = $("code").value.trim();
+  const pass = $("pass").value;
+  if (!code) { say("箱の番号がありません。リンクをもう一度開いてください。", "err"); return; }
+  if (!pass) { say("パスを入力してください。", "err"); return; }
+
+  $("go").disabled = true;
+  say("箱を探しています…");
+
+  let box;
+  try {
+    const res = await fetch(`${DB}/box/${encodeURIComponent(code)}.json`, { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    box = await res.json();
+  } catch (e) {
+    say("箱に届きませんでした（" + e.message + "）。", "err");
+    $("go").disabled = false;
+    return;
+  }
+
+  if (!box) {
+    say("この箱はありません。期限が切れたか、番号が違います。", "err");
+    $("go").disabled = false;
+    return;
+  }
+  if (box.exp && Date.now() / 1000 > box.exp) {
+    say("この箱は期限切れです。送り主に出し直しを頼んでください。", "err");
+    $("go").disabled = false;
+    return;
+  }
+
+  say("開いています…");
+  let payload;
+  try {
+    const salt = b64d(box.salt), iv = b64d(box.iv), ct = b64d(box.ct);
+    const base = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
+    const key = await crypto.subtle.deriveKey(
+      { name: "PBKDF2", salt, iterations: box.iter, hash: "SHA-256" },
+      base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+    payload = JSON.parse(new TextDecoder().decode(plain));
+  } catch (e) {
+    say("パスが違います。", "err");
+    $("go").disabled = false;
+    return;
+  }
+
+  // 復号できた = 中身も名前も、ここで初めて姿を現す。
+  const bytes = b64d(payload.data);
+  const blob = new Blob([bytes], { type: payload.mime || "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+
+  $("m-name").textContent = payload.name || "—";
+  $("m-size").textContent = humanSize(bytes.length);
+  $("m-at").textContent = box.at || "—";
+  $("meta").classList.remove("hidden");
+
+  $("form").classList.add("hidden");
+  $("title").textContent = "開きました";
+  $("subtitle").textContent = "下から保存できます。";
+  say("", "ok");
+
+  const a = document.createElement("a");
+  a.href = url; a.download = payload.name || "file";
+  a.className = "btn"; a.textContent = "保存する";
+  a.style.display = "block"; a.style.textAlign = "center";
+  a.style.textDecoration = "none"; a.style.padding = ".75rem 1.1rem";
+  $("status").after(a);
+}
+
+$("go").addEventListener("click", unlock);
+["code", "pass"].forEach(id =>
+  $(id).addEventListener("keydown", e => { if (e.key === "Enter") unlock(); }));
+
+if (!crypto.subtle) {
+  say("この画面は https でないと開けません。", "err");
+  $("go").disabled = true;
+}
+</script>
+</body>
+</html>
