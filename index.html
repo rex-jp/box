@@ -206,10 +206,9 @@ async function unlock() {
   const blob = new Blob(bodyParts, { type: head.mime || "application/octet-stream" });
   const url = URL.createObjectURL(blob);
 
-  // 中身は手元に出た。ここで箱を消す(以後このリンクは誰にも開けない)。
-  const burned = await burn(code);
-  sessionStorage.setItem("box_used", code);
-
+  // ★箱を消すのは【保存を押した時】。復号した瞬間ではない(0816 Gio実測: スマホで
+  //   保存に失敗した後、更新して取り直そうとしても箱が既に無かった)。保存が確かに
+  //   始まってから消せば、失敗しても同じ画面で押し直せる。
   $("m-name").textContent = head.name || "—";
   $("m-size").textContent = humanSize(blob.size);
   $("m-at").textContent = box.at || "—";
@@ -217,16 +216,24 @@ async function unlock() {
 
   $("form").classList.add("hidden");
   $("title").textContent = "開きました";
-  $("subtitle").textContent = burned
-    ? "箱は消しました。保存する前にこの画面を閉じないでください。"
-    : "★箱を消せませんでした。送り主に伝えてください。";
-  say(burned ? "" : "箱が残っています。", burned ? "ok" : "err");
+  $("subtitle").textContent = "保存できなければ、この画面のまま押し直してください。";
+  say("");
 
   const a = document.createElement("a");
   a.href = url; a.download = head.name || "file";
   a.className = "btn"; a.textContent = "保存する";
   a.style.display = "block"; a.style.textAlign = "center";
   a.style.textDecoration = "none"; a.style.padding = ".75rem 1.1rem";
+  a.addEventListener("click", async () => {
+    if (a.dataset.burned) return;
+    a.dataset.burned = "1";
+    const ok = await burn(code);
+    sessionStorage.setItem("box_used", code);
+    $("subtitle").textContent = ok
+      ? "箱は消しました。保存し直したい場合はこの画面のまま押してください。"
+      : "★箱を消せませんでした。送り主に伝えてください。";
+    if (!ok) say("箱が残っています。", "err");
+  });
   $("status").after(a);
 }
 
