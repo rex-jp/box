@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>inbox</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0c0c0c;--surface:#161616;--border:#252525;--border2:#333;
+  --text:#f0ebe0;--muted:#6b6560;--accent:#e8b45a;
+  --green:#5cc8a0;--red:#e06060;--r:10px;
+}
+html,body{min-height:100%;background:var(--bg);color:var(--text);
+  font-family:-apple-system,"Noto Sans JP",sans-serif;font-weight:300;line-height:1.6}
+.wrap{max-width:520px;margin:0 auto;padding:2.5rem 1.25rem;min-height:100vh;
+  display:flex;flex-direction:column;justify-content:center}
+.card{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r);padding:1.75rem}
+h1{font-size:1.05rem;font-weight:500;margin-bottom:.35rem}
+.sub{font-size:.8rem;color:var(--muted);margin-bottom:1.5rem}
+.field{margin-bottom:1rem}
+.field-label{display:block;font-size:.65rem;text-transform:uppercase;
+  letter-spacing:.12em;color:var(--muted);margin-bottom:.4rem}
+input[type=text],input[type=password]{width:100%;background:var(--bg);
+  border:1px solid var(--border2);border-radius:6px;color:var(--text);
+  font-size:.95rem;padding:.7rem .8rem;outline:none;transition:border-color .2s;
+  font-family:ui-monospace,monospace;letter-spacing:.06em}
+input:focus{border-color:var(--accent)}
+input[type=file]{width:100%;color:var(--muted);font-size:.82rem;
+  background:var(--bg);border:1px dashed var(--border2);border-radius:6px;padding:.7rem .8rem}
+.btn{width:100%;border:none;border-radius:var(--r);cursor:pointer;
+  background:var(--accent);color:#0c0c0c;font-weight:500;font-size:.9rem;
+  padding:.75rem 1.1rem;transition:filter .15s}
+.btn:hover{filter:brightness(1.08)}
+.btn:disabled{opacity:.45;cursor:default}
+.status{margin-top:1rem;font-size:.82rem;min-height:1.4em}
+.status.err{color:var(--red)}
+.status.ok{color:var(--green)}
+.note{margin-top:1.25rem;padding-top:1.25rem;border-top:1px solid var(--border);
+  font-size:.72rem;color:var(--muted)}
+.hidden{display:none}
+.done{display:flex;align-items:center;justify-content:center;min-height:100vh;
+  color:var(--muted);font-size:.9rem;letter-spacing:.08em;text-align:center;padding:2rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1 id="title">預ける</h1>
+    <div class="sub" id="subtitle">この画面の中だけで暗号にしてから送ります。原本は動きません。</div>
+
+    <div id="form">
+      <div class="field">
+        <label class="field-label" for="code">受付番号</label>
+        <input id="code" type="text" autocomplete="off" spellcheck="false"
+               inputmode="latin" placeholder="1234-abcde">
+      </div>
+      <div class="field">
+        <label class="field-label" for="pass">パス</label>
+        <input id="pass" type="password" autocomplete="off" placeholder="このPCに置いてあるもの">
+      </div>
+      <div class="field">
+        <label class="field-label" for="file">ファイル</label>
+        <input id="file" type="file">
+      </div>
+      <button class="btn" id="go">送る</button>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div class="note">
+      私用ウィンドウで開いてください。この画面は保存領域を一切使いません
+      （閉じれば何も残りません）。送れたかどうかは、この画面からは確かめられません。
+    </div>
+  </div>
+</div>
+
+<script>
+const DB = "https://gio-brain-default-rtdb.asia-southeast1.firebasedatabase.app";
+const ITER  = 310000;              // 母艦 box.ITER と一致させること
+const CHUNK = 6 * 1024 * 1024;     // 母艦 box.CHUNK と一致させること
+const MAX   = 40 * 1024 * 1024;    // 母艦 box.MAX_BYTES と一致させること
+const $ = id => document.getElementById(id);
+
+function say(msg, kind) {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+function b64e(buf) {
+  const b = new Uint8Array(buf);
+  let s = "";
+  const STEP = 0x8000;                        // 一度に渡すと大きい片で落ちる
+  for (let i = 0; i < b.length; i += STEP) {
+    s += String.fromCharCode.apply(null, b.subarray(i, i + STEP));
+  }
+  return btoa(s);
+}
+
+// 番号の正規化。母艦 inbox.normalize と同じ形(数字4+英字5・ハイフンは飾り)。
+function normalize(text) {
+  const s = String(text || "").replace(/[\s\-_]/g, "").toLowerCase();
+  if (!/^[0-9]{4}[a-z]{5}$/.test(s)) return null;
+  return s;
+}
+
+// リンクの #番号 を拾う(サーバには送られない断片)。無ければ手で入れる。
+const hash = location.hash.replace(/^#/, "").trim();
+if (hash) $("code").value = hash.length === 9 ? hash.slice(0,4) + "-" + hash.slice(4) : hash;
+
+function finished(msg) {
+  document.body.innerHTML = '<div class="done">' + msg + '</div>';
+}
+
+async function send() {
+  const code = normalize($("code").value);
+  const pass = $("pass").value;
+  const f = $("file").files[0];
+
+  if (!code) { say("受付番号の形が違います（数字4桁‐英字5字）。", "err"); return; }
+  if (!pass) { say("パスを入れてください。", "err"); return; }
+  if (!f)    { say("ファイルを選んでください。", "err"); return; }
+  if (f.size > MAX) {
+    say("大きすぎます（上限 " + (MAX/1024/1024) + "MB）。", "err"); return;
+  }
+
+  $("go").disabled = true;
+  say("読み込んでいます…");
+
+  let row;
+  try {
+    // 原本はメモリで読むだけ。新しいファイルをディスクに書かない。
+    const data = new Uint8Array(await f.arrayBuffer());
+    const head = new TextEncoder().encode(
+      JSON.stringify({ name: f.name, mime: f.type || "application/octet-stream",
+                       size: data.length }));
+    const body = new Uint8Array(head.length + 1 + data.length);
+    body.set(head, 0); body[head.length] = 10; body.set(data, head.length + 1);
+
+    say("鍵を作っています…");
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const base = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
+    const key = await crypto.subtle.deriveKey(
+      { name: "PBKDF2", salt, iterations: ITER, hash: "SHA-256" },
+      base, { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+
+    const n = Math.max(1, Math.ceil(body.length / CHUNK));
+    row = { v: 2, alg: "PBKDF2-SHA256/AES-GCM", iter: ITER, parts: n,
+            salt: b64e(salt), status: "filled" };
+    for (let i = 0; i < n; i++) {
+      say(`暗号にしています… ${i + 1}/${n}`);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      // 通し番号をAADに混ぜる = 並べ替え・抜き取りは母艦の復号で落ちる
+      const aad = new TextEncoder().encode(String(i));
+      const ct = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv, additionalData: aad }, key,
+        body.subarray(i * CHUNK, (i + 1) * CHUNK));
+      const packed = new Uint8Array(12 + ct.byteLength);
+      packed.set(iv, 0); packed.set(new Uint8Array(ct), 12);
+      row["c" + i] = b64e(packed);
+    }
+  } catch (e) {
+    say("暗号にできませんでした（" + e.message + "）。", "err");
+    $("go").disabled = false; return;
+  }
+
+  say("送っています…");
+  let res;
+  try {
+    res = await fetch(`${DB}/inbox/${encodeURIComponent(code)}.json`,
+      { method: "PATCH", cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(row) });
+  } catch (e) {
+    say("送れませんでした（回線）。", "err");
+    $("go").disabled = false; return;
+  }
+
+  // ★受け付けられない理由(番号違い/期限切れ/使用済み)は区別しない。
+  //   区別できると、番号の当たり外れを外から測れてしまう。
+  if (!res.ok) {
+    say("この受付番号では送れません。番号と期限を確かめてください。", "err");
+    $("go").disabled = false; return;
+  }
+
+  // 送った後は手元から消す(閉じる前でも残さない)
+  $("pass").value = ""; $("file").value = ""; row = null;
+  finished("送りました。<br>この画面を閉じてください。<br>"
+         + "<small>届いたかどうかは、送り主の側にだけ通知されます。</small>");
+}
+
+$("go").addEventListener("click", send);
+["code", "pass"].forEach(id =>
+  $(id).addEventListener("keydown", e => { if (e.key === "Enter") send(); }));
+
+if (!crypto.subtle) {
+  say("この画面は https でないと開けません。", "err");
+  $("go").disabled = true;
+}
+</script>
+</body>
+</html>
