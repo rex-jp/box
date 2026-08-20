@@ -27,46 +27,66 @@ h1{font-size:1.05rem;font-weight:500;margin-bottom:.35rem}
 input[type=text],input[type=password]{width:100%;background:var(--bg);
   border:1px solid var(--border2);border-radius:6px;color:var(--text);
   font-size:.95rem;padding:.7rem .8rem;outline:none;transition:border-color .2s;
-  font-family:ui-monospace,monospace;letter-spacing:.06em}
+  font-family:ui-monospace,monospace;letter-spacing:.08em}
+#code{font-size:1.35rem;text-align:center;letter-spacing:.22em;padding:.85rem .8rem}
 input:focus{border-color:var(--accent)}
-input[type=file]{width:100%;color:var(--muted);font-size:.82rem;
-  background:var(--bg);border:1px dashed var(--border2);border-radius:6px;padding:.7rem .8rem}
 .btn{width:100%;border:none;border-radius:var(--r);cursor:pointer;
   background:var(--accent);color:#0c0c0c;font-weight:500;font-size:.9rem;
   padding:.75rem 1.1rem;transition:filter .15s}
 .btn:hover{filter:brightness(1.08)}
 .btn:disabled{opacity:.45;cursor:default}
+.btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--border2);
+  margin-top:.5rem;font-size:.78rem;padding:.5rem}
+.drop{border:1px dashed var(--border2);border-radius:var(--r);padding:1.6rem 1rem;
+  text-align:center;color:var(--muted);font-size:.82rem;cursor:pointer;
+  transition:border-color .15s,background .15s}
+.drop:hover,.drop.over{border-color:var(--accent);background:#1c1a16;color:var(--text)}
+.drop.has{border-style:solid;border-color:var(--green);color:var(--text)}
+.drop b{display:block;font-weight:500;font-size:.9rem;word-break:break-all}
+.drop small{color:var(--muted)}
 .status{margin-top:1rem;font-size:.82rem;min-height:1.4em}
 .status.err{color:var(--red)}
 .status.ok{color:var(--green)}
+.ticket{font-family:ui-monospace,monospace;color:var(--accent);letter-spacing:.12em}
 .note{margin-top:1.25rem;padding-top:1.25rem;border-top:1px solid var(--border);
   font-size:.72rem;color:var(--muted)}
 .hidden{display:none}
 .done{display:flex;align-items:center;justify-content:center;min-height:100vh;
-  color:var(--muted);font-size:.9rem;letter-spacing:.08em;text-align:center;padding:2rem}
+  color:var(--muted);font-size:.9rem;letter-spacing:.08em;text-align:center;padding:2rem;
+  line-height:2}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="card">
     <h1 id="title">預ける</h1>
-    <div class="sub" id="subtitle">この画面の中だけで暗号にしてから送ります。原本は動きません。</div>
+    <div class="sub" id="subtitle">受付番号を入れてください。</div>
 
-    <div id="form">
+    <!-- 一段目: 番号だけ -->
+    <div id="step1">
       <div class="field">
         <label class="field-label" for="code">受付番号</label>
         <input id="code" type="text" autocomplete="off" spellcheck="false"
-               inputmode="latin" placeholder="1234-abcde">
+               inputmode="latin" maxlength="10" placeholder="1234-abcde">
+      </div>
+      <button class="btn" id="next">次へ</button>
+    </div>
+
+    <!-- 二段目: 同じ画面のままファイルとパス -->
+    <div id="step2" class="hidden">
+      <div class="field">
+        <label class="field-label">ファイル</label>
+        <div class="drop" id="drop">
+          ここにドラッグ&ドロップ<br><small>またはクリックして選ぶ</small>
+        </div>
+        <input id="file" type="file" class="hidden">
       </div>
       <div class="field">
         <label class="field-label" for="pass">パス</label>
         <input id="pass" type="password" autocomplete="off" placeholder="このPCに置いてあるもの">
       </div>
-      <div class="field">
-        <label class="field-label" for="file">ファイル</label>
-        <input id="file" type="file">
-      </div>
       <button class="btn" id="go">送る</button>
+      <button class="btn ghost" id="back">番号を入れ直す</button>
     </div>
 
     <div class="status" id="status"></div>
@@ -84,11 +104,18 @@ const ITER  = 310000;              // 母艦 box.ITER と一致させること
 const CHUNK = 6 * 1024 * 1024;     // 母艦 box.CHUNK と一致させること
 const MAX   = 40 * 1024 * 1024;    // 母艦 box.MAX_BYTES と一致させること
 const $ = id => document.getElementById(id);
+let CODE = null, PICKED = null;
 
 function say(msg, kind) {
   const el = $("status");
   el.textContent = msg;
   el.className = "status" + (kind ? " " + kind : "");
+}
+
+function humanSize(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
 }
 
 function b64e(buf) {
@@ -104,39 +131,87 @@ function b64e(buf) {
 // 番号の正規化。母艦 inbox.normalize と同じ形(数字4+英字5・ハイフンは飾り)。
 function normalize(text) {
   const s = String(text || "").replace(/[\s\-_]/g, "").toLowerCase();
-  if (!/^[0-9]{4}[a-z]{5}$/.test(s)) return null;
-  return s;
+  return /^[0-9]{4}[a-z]{5}$/.test(s) ? s : null;
 }
 
-// リンクの #番号 を拾う(サーバには送られない断片)。無ければ手で入れる。
+// 打っている途中でハイフンを自動で入れる(写し間違いを減らす)
+$("code").addEventListener("input", e => {
+  let v = e.target.value.replace(/[\s\-_]/g, "").toLowerCase().slice(0, 9);
+  e.target.value = v.length > 4 ? v.slice(0, 4) + "-" + v.slice(4) : v;
+  say("");
+});
+
+// リンクの #番号 を拾う(サーバには送られない断片)
 const hash = location.hash.replace(/^#/, "").trim();
-if (hash) $("code").value = hash.length === 9 ? hash.slice(0,4) + "-" + hash.slice(4) : hash;
-
-function finished(msg) {
-  document.body.innerHTML = '<div class="done">' + msg + '</div>';
+if (hash) {
+  $("code").value = hash.length === 9 ? hash.slice(0, 4) + "-" + hash.slice(4) : hash;
 }
+
+function toStep2() {
+  const c = normalize($("code").value);
+  if (!c) { say("受付番号の形が違います（数字4桁‐英字5字）。", "err"); return; }
+  // ★形しか見ていない。番号が実在するかは【この画面からは確かめられない】
+  //   (店を読めないのが設計。当たり外れを外から測れないようにしてある)
+  CODE = c;
+  $("step1").classList.add("hidden");
+  $("step2").classList.remove("hidden");
+  $("title").textContent = "預ける";
+  $("subtitle").innerHTML = '受付番号 <span class="ticket">' + $("code").value
+                          + '</span> のファイルを選んでください。';
+  say("");
+  $("pass").focus();
+}
+
+function toStep1() {
+  CODE = null; PICKED = null;
+  $("file").value = ""; $("pass").value = "";
+  $("drop").className = "drop";
+  $("drop").innerHTML = "ここにドラッグ&ドロップ<br><small>またはクリックして選ぶ</small>";
+  $("step2").classList.add("hidden");
+  $("step1").classList.remove("hidden");
+  $("subtitle").textContent = "受付番号を入れてください。";
+  say("");
+  $("code").focus();
+}
+
+function pick(f) {
+  if (!f) return;
+  if (f.size > MAX) { say("大きすぎます（上限 " + (MAX/1024/1024) + "MB）。", "err"); return; }
+  PICKED = f;
+  $("drop").className = "drop has";
+  $("drop").innerHTML = "<b>" + f.name + "</b><small>" + humanSize(f.size) + "</small>";
+  say("");
+}
+
+// ドラッグ&ドロップ(今開いている画面にそのまま落とせる)
+const drop = $("drop");
+["dragenter","dragover"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave","drop"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => pick(e.dataTransfer.files[0]));
+drop.addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", e => pick(e.target.files[0]));
+// 画面のどこに落としてもブラウザが勝手に開かないようにする
+["dragover","drop"].forEach(ev =>
+  window.addEventListener(ev, e => { if (e.target !== drop) e.preventDefault(); }));
 
 async function send() {
-  const code = normalize($("code").value);
   const pass = $("pass").value;
-  const f = $("file").files[0];
+  if (!CODE)   { say("受付番号がありません。", "err"); return; }
+  if (!PICKED) { say("ファイルを選んでください。", "err"); return; }
+  if (!pass)   { say("パスを入れてください。", "err"); return; }
 
-  if (!code) { say("受付番号の形が違います（数字4桁‐英字5字）。", "err"); return; }
-  if (!pass) { say("パスを入れてください。", "err"); return; }
-  if (!f)    { say("ファイルを選んでください。", "err"); return; }
-  if (f.size > MAX) {
-    say("大きすぎます（上限 " + (MAX/1024/1024) + "MB）。", "err"); return;
-  }
-
-  $("go").disabled = true;
+  $("go").disabled = true; $("back").disabled = true;
   say("読み込んでいます…");
 
   let row;
   try {
     // 原本はメモリで読むだけ。新しいファイルをディスクに書かない。
-    const data = new Uint8Array(await f.arrayBuffer());
+    const data = new Uint8Array(await PICKED.arrayBuffer());
     const head = new TextEncoder().encode(
-      JSON.stringify({ name: f.name, mime: f.type || "application/octet-stream",
+      JSON.stringify({ name: PICKED.name,
+                       mime: PICKED.type || "application/octet-stream",
                        size: data.length }));
     const body = new Uint8Array(head.length + 1 + data.length);
     body.set(head, 0); body[head.length] = 10; body.set(data, head.length + 1);
@@ -166,42 +241,46 @@ async function send() {
     }
   } catch (e) {
     say("暗号にできませんでした（" + e.message + "）。", "err");
-    $("go").disabled = false; return;
+    $("go").disabled = false; $("back").disabled = false; return;
   }
 
   say("送っています…");
   let res;
   try {
-    res = await fetch(`${DB}/inbox/${encodeURIComponent(code)}.json`,
+    res = await fetch(`${DB}/inbox/${encodeURIComponent(CODE)}.json`,
       { method: "PATCH", cache: "no-store",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(row) });
   } catch (e) {
     say("送れませんでした（回線）。", "err");
-    $("go").disabled = false; return;
+    $("go").disabled = false; $("back").disabled = false; return;
   }
 
   // ★受け付けられない理由(番号違い/期限切れ/使用済み)は区別しない。
   //   区別できると、番号の当たり外れを外から測れてしまう。
   if (!res.ok) {
     say("この受付番号では送れません。番号と期限を確かめてください。", "err");
-    $("go").disabled = false; return;
+    $("go").disabled = false; $("back").disabled = false; return;
   }
 
   // 送った後は手元から消す(閉じる前でも残さない)
-  $("pass").value = ""; $("file").value = ""; row = null;
-  finished("送りました。<br>この画面を閉じてください。<br>"
-         + "<small>届いたかどうかは、送り主の側にだけ通知されます。</small>");
+  $("pass").value = ""; $("file").value = ""; row = null; PICKED = null; CODE = null;
+  document.body.innerHTML =
+    '<div class="done">送りました。<br>この画面を閉じてください。<br>'
+  + '<small>届いたかどうかは、送り主の側にだけ通知されます。</small></div>';
 }
 
+$("next").addEventListener("click", toStep2);
+$("back").addEventListener("click", toStep1);
 $("go").addEventListener("click", send);
-["code", "pass"].forEach(id =>
-  $(id).addEventListener("keydown", e => { if (e.key === "Enter") send(); }));
+$("code").addEventListener("keydown", e => { if (e.key === "Enter") toStep2(); });
+$("pass").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
 
 if (!crypto.subtle) {
   say("この画面は https でないと開けません。", "err");
-  $("go").disabled = true;
+  $("next").disabled = true;
 }
+$("code").focus();
 </script>
 </body>
 </html>
