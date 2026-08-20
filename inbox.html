@@ -51,6 +51,8 @@ input:focus{border-color:var(--accent)}
 .note{margin-top:1.25rem;padding-top:1.25rem;border-top:1px solid var(--border);
   font-size:.72rem;color:var(--muted)}
 .hidden{display:none}
+#step1{display:flex;flex-direction:column;gap:.9rem}
+#step1 .bell{margin-top:0;order:-1;letter-spacing:.18em;text-transform:lowercase}
 .done{display:flex;align-items:center;justify-content:center;min-height:100vh;
   color:var(--muted);font-size:.9rem;letter-spacing:.08em;text-align:center;padding:2rem;
   line-height:2}
@@ -59,16 +61,14 @@ input:focus{border-color:var(--accent)}
 <body>
 <div class="wrap">
   <div class="card">
-    <h1 id="title">預ける</h1>
-    <div class="sub" id="subtitle">受付番号を入れてください。</div>
+    <h1 id="title" class="hidden">預ける</h1>
+    <div class="sub hidden" id="subtitle"></div>
 
-    <!-- 一段目: 番号だけ -->
+    <!-- 一段目: telg と 番号枠 だけ -->
     <div id="step1">
-      <div class="field">
-        <label class="field-label" for="code">受付番号</label>
-        <input id="code" type="text" autocomplete="off" spellcheck="false"
-               inputmode="latin" maxlength="10" placeholder="1234-abcde">
-      </div>
+      <button class="btn ghost bell" id="telg">telg</button>
+      <input id="code" type="text" autocomplete="off" spellcheck="false"
+             inputmode="latin" maxlength="10" placeholder="0000-aaaaa">
       <button class="btn" id="next">次へ</button>
     </div>
 
@@ -91,10 +91,6 @@ input:focus{border-color:var(--accent)}
 
     <div class="status" id="status"></div>
 
-    <div class="note">
-      私用ウィンドウで開いてください。この画面は保存領域を一切使いません
-      （閉じれば何も残りません）。送れたかどうかは、この画面からは確かめられません。
-    </div>
   </div>
 </div>
 
@@ -163,6 +159,8 @@ function toStep2() {
   CODE = c;
   $("step1").classList.add("hidden");
   $("step2").classList.remove("hidden");
+  $("title").classList.remove("hidden");
+  $("subtitle").classList.remove("hidden");
   $("title").textContent = "預ける";
   $("subtitle").innerHTML = '受付番号 <span class="ticket">' + $("code").value
                           + '</span> のファイルを選んでください。';
@@ -177,7 +175,8 @@ function toStep1() {
   $("drop").innerHTML = "ここにドラッグ&ドロップ<br><small>またはクリックして選ぶ</small>";
   $("step2").classList.add("hidden");
   $("step1").classList.remove("hidden");
-  $("subtitle").textContent = "受付番号を入れてください。";
+  $("title").classList.add("hidden");
+  $("subtitle").classList.add("hidden");
   say("");
   $("code").focus();
 }
@@ -203,6 +202,27 @@ $("file").addEventListener("change", e => pick(e.target.files[0]));
 // 画面のどこに落としてもブラウザが勝手に開かないようにする
 ["dragover","drop"].forEach(ev =>
   window.addEventListener(ev, e => { if (e.target !== drop) e.preventDefault(); }));
+
+// 呼び鈴。店には「押された」以上の意味を書かない(誰が押したかは残さない)。
+// 母艦が1分ごとに拾い、受付番号をGioのTelegramへ配る。
+// ★同時に1件しか書けない(ルール: 既に在れば拒否)=押し続けても鳴るのは1回。
+async function ring() {
+  $("telg").disabled = true;
+  const prev = $("telg").textContent;
+  $("telg").textContent = "…";
+  try {
+    const res = await fetch(`${DB}/invite_request.json`,
+      { method: "PUT", cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ at: Date.now() }) });
+    $("telg").textContent = res.ok ? "sent" : prev;
+    if (!res.ok) say("いま呼べません。", "err");
+  } catch (e) {
+    $("telg").textContent = prev;
+    say("いま呼べません。", "err");
+  }
+  setTimeout(() => { $("telg").disabled = false; $("telg").textContent = prev; }, 60000);
+}
 
 async function send() {
   const pass = $("pass").value;
@@ -278,6 +298,7 @@ async function send() {
   + '<small>届いたかどうかは、送り主の側にだけ通知されます。</small></div>';
 }
 
+$("telg").addEventListener("click", ring);
 $("next").addEventListener("click", toStep2);
 $("back").addEventListener("click", toStep1);
 $("go").addEventListener("click", send);
