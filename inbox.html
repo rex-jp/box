@@ -103,6 +103,11 @@ const DB = "https://gio-brain-default-rtdb.asia-southeast1.firebasedatabase.app"
 const ITER  = 310000;              // 母艦 box.ITER と一致させること
 const CHUNK = 6 * 1024 * 1024;     // 母艦 box.CHUNK と一致させること
 const MAX   = 40 * 1024 * 1024;    // 母艦 box.MAX_BYTES と一致させること
+// 母艦 inbox.py の FIXED_D / FIXED_L と一致させること(ズレたら全部弾かれる)。
+// ★これは秘密ではない: この行は誰でも読める。目的は「見ずに次へを押せない」ことと
+//   打ち間違いの早期検知であって、本当の関所はFirebaseルールと固定パス。
+const FIXED_D = "8";               // 前から2番目(数字)
+const FIXED_L = "w";               // 前から8番目(英字の後ろから2番目)
 const $ = id => document.getElementById(id);
 let CODE = null, PICKED = null;
 
@@ -131,7 +136,9 @@ function b64e(buf) {
 // 番号の正規化。母艦 inbox.normalize と同じ形(数字4+英字5・ハイフンは飾り)。
 function normalize(text) {
   const s = String(text || "").replace(/[\s\-_]/g, "").toLowerCase();
-  return /^[0-9]{4}[a-z]{5}$/.test(s) ? s : null;
+  if (!/^[0-9]{4}[a-z]{5}$/.test(s)) return null;
+  if (s[1] !== FIXED_D || s[7] !== FIXED_L) return null;   // 2番目と8番目
+  return s;
 }
 
 // 打っている途中でハイフンを自動で入れる(写し間違いを減らす)
@@ -149,9 +156,10 @@ if (hash) {
 
 function toStep2() {
   const c = normalize($("code").value);
-  if (!c) { say("受付番号の形が違います（数字4桁‐英字5字）。", "err"); return; }
-  // ★形しか見ていない。番号が実在するかは【この画面からは確かめられない】
+  if (!c) { say("受付番号が違います。", "err"); return; }
+  // ★形と固定位置しか見ていない。番号が実在するかは【この画面からは確かめられない】
   //   (店を読めないのが設計。当たり外れを外から測れないようにしてある)
+  //   どこが違うかは言わない(言えば当てる手掛かりになる)
   CODE = c;
   $("step1").classList.add("hidden");
   $("step2").classList.remove("hidden");
